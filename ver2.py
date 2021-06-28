@@ -6,6 +6,7 @@ from pathlib import Path
 import glob
 import math
 from PIL import Image
+import serial
 from tensorflow.keras.models import load_model
 from architecture import * 
 from tensorflow.keras.models import load_model
@@ -100,7 +101,7 @@ def find_face(face_detector=0, face_encoder=0, source=0, known_face_encodings=0)
             except Exception:
                 pass
 
-        face = face[:60,:,:]
+        #face = face[:60,:,:]
         face = cv2.resize(face, (160,160))
         if isinstance(source, str):
             cv2.imwrite(f"faces/{len(known_face_encodings)}.jpg", face)
@@ -145,6 +146,9 @@ gesture_recognizer = load_model('model_gesture_gene_OK.h5')
 detection_graph, sess = detector_utils.load_inference_graph()
 mask_detector = load_model('model_mask.h5')
 
+# ------ load temperature measurement ------
+ser = serial.Serial('/dev/cu.usbmodem144101')
+ser.flushInput()
 # ------ Load sample pictures and learn their encodings & record their name ------
 known_face_encodings = []
 known_face_names = []
@@ -179,6 +183,8 @@ status = "bad"
 gesture = "yes"
 no_ges_cnt = 0
 asked_cnt = 0
+temperature = []
+temperature_result = 0
 
 MASK = False
 
@@ -287,7 +293,7 @@ while cap.isOpened():
                 if cnt > 10:
                     cnt = 0
                     if gesture == 'YES':
-                        mode = 'finish'
+                        mode = 'checkTemperature'
                         status = 'good'
                     elif gesture == 'NO':
                         mode = 'finish'
@@ -297,7 +303,11 @@ while cap.isOpened():
                 cnt = 0
                 if no_ges_cnt > 100:
                     mode == 'checkFace'
-    
+        if mode == 'checkTemperature':
+            ser_bytes = ser.readline()
+            decoded_bytes = float(ser_bytes[0:len(ser_bytes)-2].decode("utf-8"))
+            temperature.append(decoded_bytes)
+ 
     process_this_frame = not process_this_frame
 
     # Display the results
@@ -325,6 +335,29 @@ while cap.isOpened():
             cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 0, 255), cv2.FILLED)
             font = cv2.FONT_HERSHEY_DUPLEX
             cv2.putText(frame, gesture, (left + 6, bottom - 6), font, 1.0, (255, 255, 255), 1)
+    if mode == 'checkTemperature':
+        if (temperature_result <= 35) and (len(temperature) < 10 or (abs(temperature[-10]-temperature[-1])>0.5)):
+            temperature_result = sum(temperature[-10:])/10
+            cv2.rectangle(frame, (0, im_height-35), (im_width, im_height), (0, 0, 255), cv2.FILLED)
+            font = cv2.FONT_HERSHEY_DUPLEX
+            text = "PLEASE MEASURE YOUR TEMPERATURE."
+            cv2.putText(frame, text, (6, im_height-6), font, 1.0, (255, 255, 255), 1)
+        elif (temperature_result > 35):
+            cv2.rectangle(frame, (0, im_height-35), (im_width, im_height), (0, 0, 255), cv2.FILLED)
+            font = cv2.FONT_HERSHEY_DUPLEX
+            text = "YOUR TEMPERATURE IS "+str(round(temperature_result,2))+" DEGREES CELCIUS."
+            cv2.putText(frame, text, (6, im_height-6), font, 1.0, (255, 255, 255), 1)
+            cnt += 1
+            if cnt > 20:
+                cnt = 0
+                mode = 'finish'
+                if temperature_result >= 37.5:
+                    status = 'bad'
+                else:
+                    status = 'good'
+                temperature = []
+                temperature_result = 0
+
     if mode == 'finish':
         tmp = ""
         if MASK == False:
@@ -340,7 +373,7 @@ while cap.isOpened():
             text = "SORRY, NOT ALLOWED."
             cv2.putText(frame, text, (6, im_height-6), font, 1.0, (255, 255, 255), 1)
         cnt += 1
-        if cnt > 70:
+        if cnt > 40:
             cnt = 0
             mode = 'checkFace'
     # Display the resulting image
